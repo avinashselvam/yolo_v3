@@ -32,7 +32,6 @@ def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
     prediction[:,:,4] = torch.sigmoid(prediction[:,:,4])
     prediction[:,:,5: 5+num_classes] = torch.sigmoid(prediction[:,:,5: 5+num_classes])
     
-    
     # apply center offsets
     # this part is absolutely brilliant
     grid = np.arange(grid_size)
@@ -58,5 +57,94 @@ def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
 
     return prediction
 
-def write_results(prediction, confidence, num_classes, nms_conf=0.4):
+def unique(tensor):
+    tensor_np = tensor.cpu().numpy()
+    unique_np = np.unique(tensor_np)
+    unique_tensor = torch.from_numpy(unique_np)
+
+    tensor_res = tensor.new(unique_tensor.shape)
+    tensor_res.copy_(unique_tensor)
+    return tensor_res
+
+def bbox_iou(box1, box2):
+
+    # get diagonal coordinates of 2 bounding boxes
+    b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
+    b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
+
+    # calculate the diagonal coords of intersection box
+    # b3 refers to the intersection box formed
+    b3_x1 = torch.max(b1_x1, b2_x1)
+    b3_x2 = torch.max(b1_x2, b2_x2)
+    b3_y1 = torch.min(b1_y1, b2_y1)
+    b3_y2 = torch.min(b1_y2, b2_y2)
+
+    # calc intersection area
+    # clamp sides to a min = 0, case of no common area
+    b3_area = torch.clamp(b3_x2 - b3_x1 + 1, min=0) * torch.clamp(b3_y2 - b3_y1 + 1, min=0)
     
+    # calc union area
+    
+
+    
+    
+
+    return iou
+
+def write_results(prediction, confidence, num_classes, nms_conf=0.4):
+
+    # confidence thresholding
+    confidence_mask = (prediction[:,:,4] > confidence).float().unsqueeze(2)
+    prediction = prediction * confidence_mask
+    
+    # Non maximum supression needs 2 diagonal pts.
+    # center +- width/2, center +- height/2 -> 2 diagonal pts
+    # create temp variable to prevent read/write errors
+    box_corner = prediction.new(prediction.shape)
+    box_corner[:,:,0] = prediction[:,:,0] - prediction[:,:,2]/2
+    box_corner[:,:,1] = prediction[:,:,1] - prediction[:,:,3]/2
+    box_corner[:,:,2] = prediction[:,:,0] + prediction[:,:,2]/2
+    box_corner[:,:,3] = prediction[:,:,1] + prediction[:,:,3]/2
+    prediction[:,:,:4] = box_corner[:,:,:4]
+
+    # different images have different no. of true detections
+    # so iterate through each image as vectorisation isn't feasible
+    batch_size = prediction.size(0)
+    
+    write = False
+    
+    # iterate through each prediction in the bbox table
+    for ind in range(batch_size):
+        # prediction of each image at network end
+        image_pred = prediction[ind]
+
+        # chuck minority classes' scores
+        max_conf, max_conf_score = torch.max(image_pred[:, 5:5 + num_classes], 1)
+        # extend axis 1 so that they can be appended
+        max_conf = max_conf.float().unsqueeze(1)
+        max_conf_score = max_conf_score.float().unsqueeze(1)
+        # elements to be concatenated
+        seq = (image_pred[:,:5], max_conf, max_conf_score)
+        image_pred = torch.cat(seq, 1)
+
+        # chuck rows that fail confidence thresholding
+        non_zero_ind = torch.nonzero(image_pred[:, 4])
+        try:
+            image_pred_ = image_pred[non_zero_ind.squeeze(),:].view(-1, 7)
+        except:
+            continue
+        # if image_pred_ is empty
+        if image_pred_.shape[0] == 0:
+            continue
+
+        # different classes detected in the image
+        # refer above for defn. of unique TLDR: uses np.unique()
+        img_classes = unique(image_pred_[:, -1])
+
+        # perform NMS for each detected class
+        for cls in img_classes:
+            cls_mask = image_pred_ * (image_pred_[:, -1] == cls).float().unsqueeze(1)
+            
+            
+        
+        
