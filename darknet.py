@@ -4,6 +4,17 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 
+from util import *
+
+def get_test_input():
+    img = cv2.imread('dog-cycle-car.png')
+    img = cv2.resize(img, (416, 416))
+    img_ = img[:,:,::-1].transpose((2, 0, 1))
+    img_ = img_[np.newaxis,:,:,:] / 255.0
+    img_ = torch.from_numpy(img_).float()
+    img_ = Variable(img_)
+    return img_
+
 def parse_cfg(path):
 
     # stores each line in a list, removing comments and empty lines
@@ -133,7 +144,7 @@ def create_modules(blocks):
 
         elif x['type'] == 'yolo':
 
-            # says which anchors to use
+            # mask says which anchors to use
             mask = x['mask'].split(',')
             mask = [int(i) for i in mask]
 
@@ -163,5 +174,70 @@ class Darknet(nn.Module):
         self.net_info, self.module_list = create_modules(self.blocks)
     
     def forward(self, x, CUDA):
+        # first block is net info
+        # rest all contain information of each layer of the network
         modules = self.blocks[1:]
+        # used to cache outputs to be later used in route layers
         outputs = {}
+
+        first_detection = 0
+
+        for i, module in enumerate(modules):
+            module_type = (module['type'])
+
+            # conv2d and upsampling2d are predefined by torch
+            # use them as sequential modules from module_list
+            if module_type == 'convolutional' or module_type == 'upsample':
+                x = self.module_list[i](x)
+            
+            # use outputs cache dict and provide appropiate values
+            elif module_type == 'route':
+                layers = module['layers']
+                layers = [int(a) for a in layers]
+
+                # convert to -ve index notation a[9] -> a[-1]
+                if layers[0] > 0:
+                    layers[0] -= i
+        
+                # if only one index given get values of that layer
+                if len(layers) == 1:
+                    x = outputs[i + layers[0]]
+                # if two are given concatenate values
+                else:
+                    # convert to -ve index notation a[9] -> a[-1]
+                    if layers[1] > 0:
+                        layers[1] -= i
+                    
+                    map1 = outputs[i + layers[0]]
+                    map2 = outputs[i + layers[1]]
+                    # concatenate along depth axis
+                    x = torch.cat((map1, map2), 1)
+            
+            # skip layer like in Resnet
+            elif module_type == 'shortcut':
+                from_ = int(module['from'])
+                x = outputs[i - 1] + outputs[i + from_]
+                
+            elif module_type == 'yolo':
+                anchors = self.module_list[i][0].anchors
+                
+                input_dim = int(self.net_info['height'])
+                num_classes = int(module['classes'])
+
+                x = x.data
+                x = predict_transform(x, input_dim, anchors, num_classes)
+                # since we can't append to empty tensor
+                if not first_detection:
+                    detections = x
+                    first_detection = 1
+                else:
+                    detections = torch.cat((detections, x), 1)
+
+            outputs[i] = x
+
+        return detections
+
+model = Darknet('cfg/yolov3.cfg')
+ip = get_test_input()
+pred = model(inp)
+print(pred)
